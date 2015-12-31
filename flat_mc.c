@@ -332,7 +332,7 @@ int main(void) {
     if (c == our_color) {
       if (die0 == die1) {
         for (int i = 0; i < 4; i++) {
-          Move move = select_move(&b, c, die0, 255, 10000 / 4, NULL); // TOdo: pass?
+          Move move = select_move(&b, c, die0, 255, 10000 / 4, NULL); // TODO: pass?
           if (move.from == 255 && move.to == 255) {
             break;
           }

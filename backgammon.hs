@@ -140,8 +140,8 @@ runMatch whitePlayer redPlayer =
            loop player0 player1 color0 color1 side0 side1 die0 die1 =
                do sendDice player0 die0 die1
                   sendDice player1 die0 die1
-                  --print color0
-                  --print $ "d " ++ show die0 ++ " " ++ show die1
+                  print color0
+                  print $ "d " ++ show die0 ++ " " ++ show die1
                   moves <- getMoves player0
                   let (side0', side1') = foldl' applyMove' (side0, side1) moves
                   let dice =
@@ -177,7 +177,8 @@ runMatch whitePlayer redPlayer =
           getMoves p = go
             where go =
                     do s <- receive p
-                       --print s
+                       let e = error $ "getMoves: " ++ s
+                       print s
                        let trim = let f = reverse . dropWhile isSpace in f . f
                        let s' = trim s
                        if s' == "e"
@@ -189,9 +190,9 @@ runMatch whitePlayer redPlayer =
                                                    in case reads s''' of
                                                         [(y, "")] ->
                                                           fmap ((f x, f y):) go
-                                                        [] -> error "blah"
-                                                 [] -> error "blah"
-                                  _ -> error "blah"
+                                                        [] -> e
+                                                 [] -> e
+                                  _ -> e
                   f 255 = -1
                   f x = x
 main :: IO ()
