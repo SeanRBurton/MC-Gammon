@@ -162,7 +162,7 @@ runMatch whitePlayer redPlayer =
                                            die0' die1'
                      else do print (side0, side1)
                              print (side0', side1')
-                             print states
+                             --print states
                              error "invalid moves"
        let board = newGame
        let (player0, player1, color0, color1, side0, side1) =
@@ -195,23 +195,24 @@ runMatch whitePlayer redPlayer =
                                   _ -> e
                   f 255 = -1
                   f x = x
+
 main :: IO ()
 main = do [white, red] <- getArgs
           putStrLn $ "White: " ++ show white
           putStrLn $ "Red: " ++ show red
-          let go i w = do whitePlayer <- runInteractiveCommand white >>= f
+          let go a b = do whitePlayer <- runInteractiveCommand white >>= f
                           redPlayer <-   runInteractiveCommand red >>= f
                           color <- runMatch whitePlayer redPlayer
-                          putStrLn $ show i ++ ": " ++ show color
-                          let i' = i + 1
-                          if i' == games
-                             then return w
-                             else if color == White
-                                      then go i' (w + 1)
-                                      else go i' w
-          w <- go 0 0
-          putStrLn $ "White: " ++ show w
-          putStrLn $ "Red: " ++ show (games - w)
+                          let (a', b') = if color == White then (a + 1, b) else (a, b + 1)
+                          putStrLn $ "-----------------------------------------"
+                          putStrLn $ "White: " ++ show a'
+                          putStrLn $ "Red: " ++ show b'
+                          putStrLn $ "-----------------------------------------"
+                          if a' + b' == games
+                             then return ()
+                             else go a' b'
+          go 0 0
+          return ()
   where f (stdin', stdout', stderr', _) = do g stdin'
                                              return $  Player {
                                                          stdin  = stdin',
@@ -219,4 +220,4 @@ main = do [white, red] <- getArgs
                                                          stderr  = stderr'
                                                        }
           where g = flip hSetBuffering NoBuffering
-        games = 200
+        games = 100 :: Int

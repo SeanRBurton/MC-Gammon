@@ -204,23 +204,11 @@ typedef struct {
   u8 to;
 } Move;
 
-Move select_move(Board* b, Color c, u8 die0, u8 die1, u32 time_limit, bool* die0_used) {
+Move select_move(Board* b, Color c, u8 die, u32 time_limit) {
   u64 t0 = get_time_in_usecs();
   u8 from[BOARD_SIZE];
   u8 to[BOARD_SIZE];
-  //fprintf(log_file, "dice: %d %d\n", die0, die1);
-  u8 moves = generate_moves(from, to, b, c, die0);
-  u8 moves0 = moves;
-  if ((die0 != die1) && (die1 != 255)) {
-    moves += generate_moves(from + moves, to + moves, b, c, die1);
-  }
-  if (moves == 0) {
-    return (Move){255, 255};
-  }
-  //for(int i = 0; i < moves; i++) {
-  //  printf("{%d, %d} ", from[i], to[i]);
-  //}
-  //printf("\n");
+  u8 moves = generate_moves(from, to, b, c, die);
   int scores[moves];
   memset(scores, 0, moves * sizeof(int));
   Board b1;
@@ -228,7 +216,6 @@ Move select_move(Board* b, Color c, u8 die0, u8 die1, u32 time_limit, bool* die0
   u8 red[BOARD_SIZE];
   b1.white = white;
   b1.red = red;
-  int playouts = 0;
   int playout_block = 32;
   u64 t1 = t0;
   do {
@@ -246,7 +233,6 @@ Move select_move(Board* b, Color c, u8 die0, u8 die1, u32 time_limit, bool* die0
       }
     }
     COUNTER += playout_block;
-    playouts += playout_block;
     u64 t2 = get_time_in_usecs();
     u64 dt = t2 - t1;
     t1 = t2;
@@ -328,35 +314,37 @@ int main(void) {
     c = RED;
   }
   //fprintf(log_file, "316 i: %d\n", 0);
+  u8 from[BOARD_SIZE];
+  u8 to[BOARD_SIZE];
   while (1) {
     if (c == our_color) {
       if (die0 == die1) {
         for (int i = 0; i < 4; i++) {
-          Move move = select_move(&b, c, die0, 255, 10000 / 4, NULL); // TODO: pass?
-          if (move.from == 255 && move.to == 255) {
+          u8 moves = generate_moves(from, to, &b, our_color, die0);
+          if (moves == 0) {
             break;
           }
+          u8 j = random_number() % moves;
+          Move move = (Move){from[j], to[j]};
           send_move(move);
           apply_move(&b, c, move.from, move.to);
         }
       } else {
-        bool die0_used;
+        if (die0 < die1) {
+          u8 tmp = die0;
+          die0 = die1;
+          die1 = tmp;
+        }
         for(int i = 0; i < 2; i++) {
-          //fprintf(log_file, "335 i: %d\n", i);
-          //fprintf(log_file, "selecting_move\n");
-          //fprintf(log_file, "dice: %d %d\n", die0, die1);
-          Move move = select_move(&b, c, die0, die1, 10000 / 2, &die0_used);
-          //fprintf(log_file, "selected_move\n");
-          if (move.from == 255 && move.to == 255) {
-            //fprintf(log_file, "breaking\n");
-            break;
+          u8 moves = generate_moves(from, to, &b, our_color, die0);
+          if (moves == 0) {
+            die0 = die1;
+            continue;
           }
+          u8 j = random_number() % moves;
+          Move move = (Move){from[j], to[j]};
           send_move(move);
           apply_move(&b, c, move.from, move.to);
-          if (die0_used) {
-            die0 = die1;
-          }
-          die1 = 255;
         }
       }
       //fprintf(log_file, "ending_turn\n");
