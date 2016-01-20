@@ -9,63 +9,18 @@
 #include <unistd.h>
 
 #define i8  int8_t
+#define i64 int64_t
 #define u8  uint8_t
 #define u32 uint32_t
 #define u64 uint64_t
 
-#define POOL_ALLOCATOR_CHUNK_SIZE 30000
-
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-
-#define BAR_INDEX 255
-#define QUADRANT_SIZE 6
-#define BOARD_SIZE (4 * QUADRANT_SIZE)
-#define NUM_CHECKERS 15
-#define NUM_DICE 2
-
 FILE* log_file;
 
-#define LOG(...)
-#define LOG2(...) fprintf(log_file, __VA_ARGS__)
-
 #ifdef NDEBUG
-#define dassert(x) assert(x)
+#define LOG(...)
 #else
-#define dassert(x)
+#define LOG(...) fprintf(log_file, __VA_ARGS__)
 #endif
-
-typedef enum {
-  RED,
-  WHITE,
-} Color;
-
-//White is positive
-//Black is negative
-//0-23 are the points
-//24 is the white bar
-//25 is the black bar
-//26 is the white home
-//27 is the black home
-typedef struct {
-  i8 board[28];
-} Board;
-
-void log_board(Board* b) {
-  int white = 0;
-  int red = 0;
-  for(int i = 0; i < 28; i++) {
-    i8 x = b->board[i];
-    if (x > 0) {
-      white += x;
-    } else {
-      red -= x;
-    }
-  }
-  for(int i = 0; i < 28; i++) {
-    LOG("%*d", 3, b->board[i]);
-  }
-  LOG("\n");
-}
 
 u64 xorshift_state = 8425289453374772393;
 
@@ -81,9 +36,13 @@ u32 random_number() {
 void seed_prng(void) {
   struct timespec t;
   for(int i = 0; i < 4; i++) {
-    dassert(!clock_gettime(CLOCK_MONOTONIC, &t));
-    xorshift_state ^= ((u64)(t.tv_nsec) << 32);
-    xorshift_state ^= (u64)(t.tv_sec);
+    int err = clock_gettime(CLOCK_MONOTONIC, &t);
+    if (err) {
+      printf("error: clock_gettime");
+      exit(EXIT_FAILURE);
+    };
+    xorshift_state ^= (u64)(t.tv_nsec) << 32;
+    xorshift_state ^= (u64)t.tv_sec;
     xorshift_state *= random_number();
   }
 }
@@ -91,72 +50,110 @@ void seed_prng(void) {
 typedef struct Pool_Allocator Pool_Allocator;
 
 struct Pool_Allocator {
-  Pool_Allocator* prev;
-  void* start;
-  void* current;
-  void* end;
+  char* start;
+  char* current;
+  char* end;
 };
 
-Pool_Allocator pool_allocator() {
+Pool_Allocator pool_allocator(size_t chunk_size) {
   Pool_Allocator a;
-  a.prev = NULL;
-  a.start = malloc(POOL_ALLOCATOR_CHUNK_SIZE);
+  a.start = malloc(chunk_size);
+  if (!a.start) {
+    printf("error: out of memory");
+    exit(EXIT_FAILURE);
+  }
   a.current = a.start;
-  a.end = a.start + POOL_ALLOCATOR_CHUNK_SIZE - sizeof(Pool_Allocator);
+  assert(a.start <= a.end - chunk_size);
+  a.end = a.start + chunk_size;
   return a;
 }
 
 void* allocate_from_pool(Pool_Allocator* a, size_t size) {
-  //return calloc(size, 1); //TODO: fixme.
-  dassert(size < POOL_ALLOCATOR_CHUNK_SIZE);
-  void* current = a->current;
+  char* current = a->current;
+  assert(current < a->end);
+  assert((uintptr_t)current <= UINTPTR_MAX - size);
   if (current + size >= a->end) {
-    Pool_Allocator b = pool_allocator();
-    Pool_Allocator* a_ptr = allocate_from_pool(&b, sizeof(Pool_Allocator));
-    *a_ptr = *a;
-    b.prev = a_ptr;
-    *a = b;
-    return allocate_from_pool(a, size);
+    return NULL;
   }
   a->current += size;
   return current;
 }
 
 void delete_pool(Pool_Allocator a) {
-  while (a.prev != NULL) {
-    Pool_Allocator b = *(a.prev);
-    free(a.start);
-    a = b;
-  }
-}
-u8 get_index(Color c, u8 pos) {
-  if (c == WHITE) {
-    return pos;
-  }
-  return 23 - pos;
+  free(a.start);
 }
 
-int generate_moves(u8* moves, Board* b, Color c, u8 die) {
-  dassert(1 <= die && die <= 6);
-  u8 move_index = 0;
-  u8 bar_index;
-  u8 home_index;
-  i8 sign;
+typedef enum {
+  RED = 0,
+  WHITE = 1,
+} Color;
+
+i8 sign(Color c) {
   if (c == WHITE) {
-    sign = 1;
-    bar_index = 24;
-    home_index = 26;
+    return 1;
+  }
+  return -1;
+}
+
+Color invert(Color c) {
+  if (c == WHITE) {
+    return RED;
+  }
+  return WHITE;
+}
+
+#define WHITE_BAR 24
+#define RED_BAR 25
+#define WHITE_HOME 26
+#define RED_HOME 27
+
+typedef struct {
+  i8 board[28];
+} Board;
+
+i8* bar(Board* b, Color c) {
+  u8 i;
+  if (c == WHITE) {
+    return b->board + WHITE_BAR;
+  }
+  return b->board + RED_BAR;
+}
+
+i8* home(Board* b, Color c) {
+  if (c == WHITE) {
+    return b->board + WHITE_HOME;
+  }
+  return b->board + RED_HOME;
+}
+
+u8 get_index(Color c, u8 point) {
+  if (c == WHITE) {
+    return point;
+  }
+  return 23 - point;
+}
+
+#define WON 255
+
+int generate_moves(u8* moves, Board* b, Color c, u8 die) {
+  assert(1 <= die && die <= 6);
+  u8 home_index;
+  u8 bar_index;
+  if (c == WHITE) {
+    home_index = WHITE_HOME;
+    bar_index  = WHITE_BAR;
   } else {
-    sign = -1;
-    bar_index = 25;
-    home_index = 27;
+    home_index = RED_HOME;
+    bar_index  = RED_BAR;
   }
-  if (sign * b->board[home_index] == 15) {
-    return 255;
+  u8 move_index = 0;
+  i8 s = sign(c);
+  if (*home(b, c) == 15) {
+    return WON;
   }
-  if (b->board[bar_index]) {
+  if (*bar(b, c)) {
     u8 from = get_index(c, -1 + (int)die);
-    i8 height = sign * b->board[from];
+    i8 height = s * b->board[from];
     if (height >= -1) {
       moves[0] = bar_index;
       moves[1] = from;
@@ -165,15 +162,14 @@ int generate_moves(u8* moves, Board* b, Color c, u8 die) {
     return 0;
   }
   int min;
-  for(min = 0; (min < 24) && (sign * b->board[get_index(c, min)] <= 0); min += 1);
+  for(min = 0; (min < 24) && (s * b->board[get_index(c, min)] <= 0); min += 1);
   int i;
   for(i = min; i < 24 - die; i++) {
     u8 from = get_index(c, i);
-    if (sign * b->board[from] > 0) {
-      u8 to = from + sign * die;
-      i8 height = sign * b->board[to];
+    if (s * b->board[from] > 0) {
+      u8 to = get_index(c, i + die);
+      i8 height = s * b->board[to];
       if (height >= -1) {
-        dassert(move_index < 2 * 24);
         moves[move_index] = from;
         moves[move_index + 1] = to;
         move_index += 2;
@@ -184,10 +180,10 @@ int generate_moves(u8* moves, Board* b, Color c, u8 die) {
   if (bearing_off) {
     for(; i < 24; i++) {
       u8 from = get_index(c, i);
-      if (sign * b->board[from] > 0) {
+      if (s * b->board[from] > 0) {
         u8 j = i + die;
         if ((j == 24) || ((j > 24) && (i == min))) {
-          dassert(move_index < 2 * 24);
+          assert(move_index < 2 * 24);
           moves[move_index] = from;
           moves[move_index + 1] = home_index;
           move_index += 2;
@@ -196,56 +192,39 @@ int generate_moves(u8* moves, Board* b, Color c, u8 die) {
       }
     }
   }
-  return move_index >> 1;
+  return move_index / 2;
 }
 
-//White is positive
-//Black is negative
-//0-23 are the points
-//24 is the white bar
-//25 is the black bar
-//26 is the white home
-//27 is the black home
-
 void apply_move(Board* b, Color c, u8 from, u8 to) {
-  dassert(from != to);
-  i8 sign;
+  assert(from != to);
+  i8 s = sign(c);
   u8 bar_index;
   u8 opponent_bar_index;
   u8 home_index;
   if (c == WHITE) {
-    sign = 1;
-    bar_index = 24;
-    opponent_bar_index = 25;
-    home_index = 26;
+    bar_index = WHITE_BAR;
+    opponent_bar_index = RED_BAR;
+    home_index = WHITE_HOME;
   } else {
-    sign = -1;
-    bar_index = 25;
-    opponent_bar_index = 24;
-    home_index = 27;
+    bar_index = RED_BAR;
+    opponent_bar_index = WHITE_BAR;
+    home_index = RED_HOME;
   }
   if (from >= 24) {
-    dassert(from == bar_index);
+    assert(from == bar_index);
   }
   if (to >= 24) {
-    dassert(to == home_index);
+    assert(to == home_index);
   }
-  dassert(sign * b->board[from] >= 1);
-  b->board[from] -= sign;
-  dassert(sign * b->board[to] >= -1);
-  if (b->board[to] == (-sign)) {
-    b->board[to] = sign;
-    b->board[opponent_bar_index] -= sign;
+  assert(s * b->board[from] >= 1);
+  b->board[from] -= s;
+  assert(s * b->board[to] >= -1);
+  if (b->board[to] == (-s)) {
+    b->board[to] = s;
+    b->board[opponent_bar_index] -= s;
   } else {
-    b->board[to] += sign;
+    b->board[to] += s;
   }
-}
-
-Color invert(Color c) {
-  if (c == WHITE) {
-    return RED;
-  }
-  return WHITE;
 }
 
 u8 roll_die() {
@@ -255,9 +234,6 @@ u8 roll_die() {
 Color playout(Board* b, Color c) {
   u8 moves[2 * 24];
   while (1) {
-    if (c == WHITE) {
-    } else {
-    }
     u8 die0 = roll_die();
     u8 die1 = roll_die();
     if (die0 < die1) {
@@ -304,7 +280,7 @@ Color playout(Board* b, Color c) {
 u64 get_time_in_usecs(void) {
   struct timespec t;
   int result = clock_gettime(CLOCK_MONOTONIC, &t);
-  dassert(result == 0);
+  assert(result == 0);
   return (u64)(t.tv_sec) * (1000 * 1000) + (u64)(t.tv_nsec) / 1000;
 }
 
@@ -318,7 +294,6 @@ typedef struct Node Node;
 struct Node {
   NodeType type;
   double score;
-  double delta;
   Color color;
   u32 playouts;
   Node* children;
@@ -330,24 +305,23 @@ struct Node {
 };
 
 void log_node(Node* node) {
-  LOG2("{\"type\": %d, ", node->type);
-  LOG2("\"score\": %f, ", node->score);
-  LOG2("\"delta\": %f, ", node->delta);
-  LOG2("\"color\": %d, ", node->color);
-  LOG2("\"playouts\": %d, ", node->playouts);
-  LOG2("\"num_children\": %d, ", node->num_children);
-  LOG2("\"num_dice\": %d, ", node->num_dice);
-  LOG2("\"die\": %d, ", node->die);
-  LOG2("\"from\": %d, ", node->from);
-  LOG2("\"to\": %d, ", node->to);
-  LOG2("\"children\": [");
+  LOG("{\"type\": %d, ", node->type);
+  LOG("\"score\": %f, ", node->score);
+  LOG("\"color\": %d, ", node->color);
+  LOG("\"playouts\": %d, ", node->playouts);
+  LOG("\"num_children\": %d, ", node->num_children);
+  LOG("\"num_dice\": %d, ", node->num_dice);
+  LOG("\"die\": %d, ", node->die);
+  LOG("\"from\": %d, ", node->from);
+  LOG("\"to\": %d, ", node->to);
+  LOG("\"children\": [");
   for(int i = 0; i < node->num_children; i++) {
     log_node(node->children + i);
     if (i != node->num_children - 1) {
-      LOG2(", ");
+      LOG(", ");
     }
   }
-  LOG2("]}\n");
+  LOG("]}\n");
 }
 
 typedef struct {
@@ -378,15 +352,21 @@ void update(Node* node, Color c) {
 
 int DEPTH;
 
-Color select_random(Pool_Allocator*, Node*, GameState);
+typedef enum {
+  RED_S = 0,
+  WHITE_S = 1,
+  OUT_OF_MEMORY_S = 2,
+} Selection;
 
-Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
+Selection select_random(Pool_Allocator*, Node*, GameState);
+
+Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
   DEPTH += 1;
-  dassert(node->type == MOVE);
+  assert(node->type == MOVE);
   if (node->playouts == 0) {
     u8 moves[2 * 24];
-    dassert(state.num_dice != 0);
-    dassert(state.num_dice <= 4);
+    assert(state.num_dice != 0);
+    assert(state.num_dice <= 4);
     u8 unique_dice;
     if ((state.num_dice == 2) && (state.dice[0] != state.dice[1])) {
       unique_dice = 2;
@@ -398,10 +378,13 @@ Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       u8 num_moves = generate_moves(moves, &(state.board), node->color, die);
       if (num_moves == 255) {
         update(node, node->color);
-        return node->color;
+        return (Selection)node->color;
       } else if (num_moves != 0) {
         node->die = die;
         node->children = allocate_from_pool(allocator, num_moves * sizeof(Node));
+        if (node->children == NULL) {
+          return OUT_OF_MEMORY_S;
+        }
         node->num_children = num_moves;
         memset(node->children, 0, num_moves * sizeof(Node));
         if (state.num_dice == 1) {
@@ -425,7 +408,7 @@ Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
         Board b = state.board;
         Color c = playout(&b, node->color);
         update(node, c);
-        return c;
+        return (Selection)c;
       }
     }
     node->type = RANDOM;
@@ -434,9 +417,9 @@ Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
     return select_random(allocator, node, state);
   }
   if (node->children == 0) {
-    dassert(true); //TODO: check winner.
+    assert(true); //TODO: check winner.
     update(node, node->color);
-    return node->color;
+    return (Selection)(node->color);
   }
   double n = (double)node->playouts;
   int best_index = 0;
@@ -457,7 +440,7 @@ Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
   }
   LOG("move_index: %d\n, depth: %d\n", best_index, DEPTH);
   Node* child = node->children + best_index;
-  dassert(child->from != child->to);
+  assert(child->from != child->to);
   apply_move(&(state.board), node->color, child->from, child->to);
   state.num_dice -= 1;
   for(int i = 0; i < state.num_dice; i++) {
@@ -468,28 +451,31 @@ Color select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       break;
     }
   }
-  Color c;
+  Selection s;
   if (child->type == MOVE) {
-    c = select_move(allocator, child, state);
+    s = select_move(allocator, child, state);
   } else {
     state.num_dice = 0;
-    c = select_random(allocator, child, state);
+    s = select_random(allocator, child, state);
   }
-  update(node, c);
-  return c;
+  if (s != OUT_OF_MEMORY_S) {
+    update(node, (Color)s);
+  }
+  return s;
 }
 
-Color select_random(Pool_Allocator* allocator, Node* node, GameState state) {
+Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) {
   DEPTH += 1;
-  dassert(node->type == RANDOM);
+  assert(node->type == RANDOM);
   if (node->playouts == 0) {
     node->num_dice = state.num_dice;
     node->children = allocate_from_pool(allocator, 6 * sizeof(Node));
-    node->delta = 0.5 / 6.0;
-    dassert(node->children != NULL);
+    if (node->children == NULL) {
+      return OUT_OF_MEMORY_S;
+    }
     node->num_children = 6;
     memset(node->children, 0, 6 * sizeof(Node));
-    dassert(node->children != NULL);
+    assert(node->children != NULL);
     for(int i = 0; i < 6; i++) {
       Node* child = node->children + i;
       child->playouts = 0;
@@ -503,7 +489,7 @@ Color select_random(Pool_Allocator* allocator, Node* node, GameState state) {
     }
     Color c = playout(&(state.board), node->color);
     update(node, c);
-    return c;
+    return (Selection)c;
   }
   u8 unplayed = 0;
   for (int i = 0; i < 6; i++) {
@@ -532,11 +518,10 @@ Color select_random(Pool_Allocator* allocator, Node* node, GameState state) {
     //  }
     //}
   }
-  LOG("child_index: %d\n, depth: %d\n", child_index, DEPTH);
   Node* child = node->children + child_index;
   u8 die = child->die;
-  dassert(state.num_dice == node->num_dice);
-  dassert(state.num_dice < 2);
+  assert(state.num_dice == node->num_dice);
+  assert(state.num_dice < 2);
   state.dice[state.num_dice++] = die;
   if (state.num_dice == 2) {
     if (state.dice[0] == die) {
@@ -544,7 +529,7 @@ Color select_random(Pool_Allocator* allocator, Node* node, GameState state) {
       state.dice[3] = state.dice[0];
       state.num_dice = 4;
     } else {
-      dassert(state.num_dice <= 2);
+      assert(state.num_dice <= 2);
       if (state.dice[0] < state.dice[1]) {
         u8 tmp = state.dice[0];
         state.dice[0] = state.dice[1];
@@ -552,24 +537,20 @@ Color select_random(Pool_Allocator* allocator, Node* node, GameState state) {
       }
     }
   }
-  Color c;
+  Selection s;
   double child_score = child->score;
   if (child->type == MOVE) {
-    c = select_move(allocator, child, state);
+    s = select_move(allocator, child, state);
   } else {
     if (child->color != node->color) {
       state.num_dice = 0;
     }
-    c = select_random(allocator, child, state);
+    s = select_random(allocator, child, state);
   }
-  LOG("child_playouts: %d\n", child->playouts);
-  LOG("child_score: %f\n", child_score);
-  LOG("child->score: %f\n", child->score);
-  double delta = fabs(child->score - child_score) / 6.0;
-  child->delta = (child->delta + delta) / 2.0;
-  LOG("new_delta: %f\n", child->delta);
-  update(node, c);
-  return c;
+  if (s != OUT_OF_MEMORY_S) {
+    update(node, (Color)s);
+  }
+  return s;
 }
 
 void mcts_search(Pool_Allocator* allocator, GameState state, Node* root, u32 time_limit) {
@@ -586,54 +567,54 @@ void mcts_search(Pool_Allocator* allocator, GameState state, Node* root, u32 tim
       if (root->type != MOVE) {
         return;
       }
-      select_move(allocator, root, state);
+      if (select_move(allocator, root, state) == OUT_OF_MEMORY_S) {
+        return;
+      }
       if (DEPTH > max_depth) {
         max_depth = DEPTH;
-        LOG("max_depth: %d\n", max_depth);
       }
-      log_board(&state.board);
     }
     u64 t2 = get_time_in_usecs();
     u64 dt = t2 - t1;
     t1 = t2;
-    u64 time_remaining = t0 + time_limit - t2;
+    i64 time_remaining = t0 + time_limit - t2;
+    if (time_remaining < 0) {
+      return;
+    }
     playout_block = (playout_block * time_remaining) / (2 * dt);
   } while (playout_block > 1);
 }
 
 void parse_dice(char* s0, u8* die0, u8* die1) {
-  dassert(s0[0] == 'd');
+  assert(s0[0] == 'd');
   char* s1;
   *die0 = strtol(s0 + 1, &s1, 10);
   *die1 = strtol(s1, NULL, 10);
   return;
 }
 
-typedef struct {
-  u8 from;
-  u8 to;
-} Move;
-
-void send_move(Color c, Move m) {
-  if (c == WHITE) {
-    if (m.from >= 24) {
-      m.from = -1;
-    }
-    if (m.to >= 24) {
-      m.to = 24;
-    }
-    printf("m %d %d\n", m.from, m.to);
-  } else {
-    printf("m %d %d\n", 23 - m.from, 23 - m.to);
+void send_move(Color c, u8 from, u8 to) {
+  if (from >= 24) {
+    from = -1;
+  } else if (c == RED) {
+    from = 23 - from;
   }
+  if (to >= 24) {
+    to = 24;
+  } else if (c == RED) {
+    to = 23 - to;
+  }
+  printf("m %d %d\n", from, to);
 }
 
 int main(void) {
   seed_prng();
+  #ifndef NDEBUG
   char log_file_name[1024];
-  sprintf((char*)(log_file_name), "log%lu.txt", (u64)time(NULL));
+  sprintf((char*)(log_file_name), "log%lu.txt", (u64)time(NULL) % 10000000);
   log_file = fopen(log_file_name, "w+");
   setvbuf(log_file, NULL, _IOLBF, 1024);
+  #endif
   setvbuf(stdout, NULL, _IOLBF, 1024);
   setvbuf(stdin, NULL, _IOLBF, 1024);
   Board b = {0};
@@ -668,7 +649,6 @@ int main(void) {
     c = RED;
   }
   while (1) {
-    //log_board(&b);
     if (c == our_color) {
       GameState state;
       state.board = b;
@@ -685,11 +665,8 @@ int main(void) {
       Node root = {0};
       root.type = MOVE;
       root.color = c;
-      Pool_Allocator allocator = pool_allocator();
-      //log_board(&b);
-      mcts_search(&allocator, state, &root, 10);
-      //log_node(&root);
-      //log_board(&b);
+      Pool_Allocator allocator = pool_allocator(50000000);
+      mcts_search(&allocator, state, &root, 200);
       Node node = root;
       while (node.type == MOVE && node.color == c) {
         if (node.playouts == 0) {
@@ -720,23 +697,15 @@ int main(void) {
             break;
           }
         }
-        Move move;
-        move.from = node.from;
-        move.to = node.to;
-        LOG("to: %d\n", node.to);
-        send_move(c, move);
+        send_move(c, node.from, node.to);
         apply_move(&(state.board), c, node.from, node.to);
       };
-      b = state.board;
-      //fprintf(log_file, "ending_turn\n");
       printf("e\n");
+      b = state.board;
       delete_pool(allocator);
-      //assert(0);
     } else {
       while (1) {
         getline(&s0, &size, stdin);
-        //fprintf(log_file, "receiving move\n");
-        //fprintf(log_file, "move: %s\n", s0);
         if (s0[0] == 'e') {
           break;
         }
@@ -746,7 +715,6 @@ int main(void) {
         u8 t0 = strtol(s1, NULL, 10);
         u8 f;
         u8 t;
-        //log_board(&b);
         if (f0 == 255) {
           if (c == WHITE) {
             f = 24;
