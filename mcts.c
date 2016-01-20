@@ -16,34 +16,40 @@
 
 FILE* log_file;
 
-#ifdef NDEBUG
-#define LOG(...)
-#else
+//#ifdef NDEBUG
+//#define LOG(...)
+//#else
 #define LOG(...) fprintf(log_file, __VA_ARGS__)
-#endif
+//#endif
 
-u64 xorshift_state = 8425289453374772393;
+
+u64 pcg_state;
 
 u32 random_number() {
-  u64 x = xorshift_state;
-  x ^= x >> 12;
-  x ^= x << 25;
-  x ^= x >> 27;
-  xorshift_state = x;
-  return (u32)((x * UINT64_C(2685821657736338717)) >> 32);
+    u64 oldstate = pcg_state;
+    pcg_state = oldstate * 6364136223846793005ULL + 9067608870314829635ULL;
+    u32 xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u;
+    u32 rot = oldstate >> 59u;
+    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
 }
 
 void seed_prng(void) {
+  pcg_state = 10199641363321847927ULL;
   struct timespec t;
-  for(int i = 0; i < 4; i++) {
-    int err = clock_gettime(CLOCK_MONOTONIC, &t);
+  for(int i = 0; i < 40; i++) {
+    int err = clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
     if (err) {
-      printf("error: clock_gettime");
+      printf("error: seed_prng: clock_gettime");
       exit(EXIT_FAILURE);
     };
-    xorshift_state ^= (u64)(t.tv_nsec) << 32;
-    xorshift_state ^= (u64)t.tv_sec;
-    xorshift_state *= random_number();
+    pcg_state ^= ((u64)(t.tv_nsec)) << 32;
+    pcg_state ^= t.tv_sec;
+    pcg_state += random_number();
+    pcg_state ^= random_number();
+  }
+  for(int i = 0; i < 8; i++) {
+    pcg_state *= random_number();
+    pcg_state ^= random_number();
   }
 }
 
@@ -55,16 +61,16 @@ struct Pool_Allocator {
   char* end;
 };
 
-Pool_Allocator pool_allocator(size_t chunk_size) {
+Pool_Allocator pool_allocator(size_t size) {
   Pool_Allocator a;
-  a.start = malloc(chunk_size);
+  a.start = malloc(size);
   if (!a.start) {
     printf("error: out of memory");
     exit(EXIT_FAILURE);
   }
   a.current = a.start;
-  assert(a.start <= a.end - chunk_size);
-  a.end = a.start + chunk_size;
+  assert(a.start <= a.end - size);
+  a.end = a.start + size;
   return a;
 }
 
@@ -113,7 +119,6 @@ typedef struct {
 } Board;
 
 i8* bar(Board* b, Color c) {
-  u8 i;
   if (c == WHITE) {
     return b->board + WHITE_BAR;
   }
@@ -149,7 +154,7 @@ int generate_moves(u8* moves, Board* b, Color c, u8 die) {
   }
   u8 move_index = 0;
   i8 s = sign(c);
-  if (*home(b, c) == 15) {
+  if (s * (*home(b, c)) == 15) {
     return WON;
   }
   if (*bar(b, c)) {
@@ -163,7 +168,12 @@ int generate_moves(u8* moves, Board* b, Color c, u8 die) {
     return 0;
   }
   int min;
-  for(min = 0; (min < 24) && (s * b->board[get_index(c, min)] <= 0); min += 1);
+  if (c == WHITE) {
+    for(min = 0; (min < 24) && (b->board[min] <= 0); min += 1);
+  } else {
+    for(min = 24; (min >= 0) && (b->board[min] >= 0); min -= 1);
+    min = 23 - min;
+  }
   int i;
   for(i = min; i < 24 - die; i++) {
     u8 from = get_index(c, i);
@@ -232,11 +242,17 @@ u8 roll_die() {
   return (u8)(random_number() % 6 + 1);
 }
 
+int PLAYOUTS;
+
 Color playout(Board* b, Color c) {
+  //LOG2("----------------------------------");
+  PLAYOUTS += 1;
   u8 moves[2 * 24];
   while (1) {
-    LOG("turn\n");
-    LOG("color: %d\n", c);
+    for(int i = 0; i < 28; i++) {
+      //LOG2("%*d", 3, b->board[i]);
+    }
+    //LOG2("\n");
     u8 die0 = roll_die();
     u8 die1 = roll_die();
     if (die0 < die1) {
@@ -261,6 +277,7 @@ Color playout(Board* b, Color c) {
       for(int i = 0; i < 3; i++) {
         u8 num_moves = generate_moves(moves, b, c, die0);
         if (num_moves == 255) {
+          //LOG2("%d\n", c);
           return c;
         } else if (num_moves == 0) {
           passes += 1;
@@ -305,6 +322,7 @@ struct Node {
   u8 die;
   u8 from;
   u8 to;
+  u8 index;
 };
 
 void log_node(Node* node) {
@@ -334,8 +352,8 @@ typedef struct {
 } GameState;
 
 void update(Node* node, Color c) {
-  LOG("old_score: %f\n", node->score);
-  LOG("old_playouts: %d\n", node->playouts);
+  //LOG("old_score: %f\n", node->score);
+  //LOG("old_playouts: %d\n", node->playouts);
   int playouts = node->playouts + 1;
   double fplayouts = (double)(playouts);
   double k = (double)(node->playouts) / fplayouts;
@@ -345,12 +363,12 @@ void update(Node* node, Color c) {
   } else {
     result = -1;
   }
-  LOG("k: %f\n", k);
-  LOG("result: %f\n", result);
+  //LOG("k: %f\n", k);
+  //LOG("result: %f\n", result);
   node->score = k * node->score + result / fplayouts;
   node->playouts = playouts;
-  LOG("playouts: %d\n", node->playouts);
-  LOG("new_score: %f\n", node->score);
+  //LOG("playouts: %d\n", node->playouts);
+  //LOG("new_score: %f\n", node->score);
 }
 
 int DEPTH;
@@ -408,8 +426,7 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
           }
         }
         node->die = die;
-        Board b = state.board;
-        Color c = playout(&b, node->color);
+        Color c = playout(&state.board, node->color);
         update(node, c);
         return (Selection)c;
       }
@@ -471,14 +488,13 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
   DEPTH += 1;
   assert(node->type == RANDOM);
   if (node->playouts == 0) {
-    node->num_dice = state.num_dice;
     node->children = allocate_from_pool(allocator, 6 * sizeof(Node));
     if (node->children == NULL) {
       return OUT_OF_MEMORY_S;
     }
-    node->num_children = 6;
     memset(node->children, 0, 6 * sizeof(Node));
-    assert(node->children != NULL);
+    node->num_dice = state.num_dice;
+    node->num_children = 6;
     for(int i = 0; i < 6; i++) {
       Node* child = node->children + i;
       child->playouts = 0;
@@ -494,22 +510,9 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
     update(node, c);
     return (Selection)c;
   }
-  u8 unplayed = 0;
-  for (int i = 0; i < 6; i++) {
-    Node child = node->children[i];
-    if (child.playouts == 0) {
-      node->children[i] = node->children[unplayed];
-      node->children[unplayed++] = child;
-    }
-  }
-  u8 child_index;
-  if (unplayed) {
-    child_index = random_number() % unplayed;
-  } else {
-    child_index = random_number() % node->num_children;
-  }
+  u8 child_index = random_number() % 6;
   Node* child = node->children + child_index;
-  u8 die = child->die;
+  u8 die = child_index + 1;
   assert(state.num_dice == node->num_dice);
   assert(state.num_dice < 2);
   state.dice[state.num_dice++] = die;
@@ -528,7 +531,6 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
     }
   }
   Selection s;
-  double child_score = child->score;
   if (child->type == MOVE) {
     s = select_move(allocator, child, state);
   } else {
@@ -598,6 +600,7 @@ void send_move(Color c, u8 from, u8 to) {
 }
 
 int main(void) {
+  PLAYOUTS = 0;
   seed_prng();
   #ifndef NDEBUG
   char log_file_name[1024];
@@ -658,7 +661,6 @@ int main(void) {
       Pool_Allocator allocator = pool_allocator(50000000);
       mcts_search(&allocator, state, &root, 200);
       log_node(&root);
-      return 0;
       Node node = root;
       while (node.type == MOVE && node.color == c) {
         if (node.playouts == 0) {
