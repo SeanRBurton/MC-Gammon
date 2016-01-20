@@ -14,14 +14,12 @@
 #define u32 uint32_t
 #define u64 uint64_t
 
+#ifdef NDEBUG
+#define LOG(...)
+#else
 FILE* log_file;
-
-//#ifdef NDEBUG
-//#define LOG(...)
-//#else
 #define LOG(...) fprintf(log_file, __VA_ARGS__)
-//#endif
-
+#endif
 
 u64 pcg_state;
 
@@ -660,7 +658,7 @@ int main(void) {
       root.color = c;
       Pool_Allocator allocator = pool_allocator(50000000);
       mcts_search(&allocator, state, &root, 200);
-      log_node(&root);
+      //log_node(&root);
       Node node = root;
       while (node.type == MOVE && node.color == c) {
         if (node.playouts == 0) {
