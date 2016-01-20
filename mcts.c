@@ -73,6 +73,7 @@ void* allocate_from_pool(Pool_Allocator* a, size_t size) {
   assert(current < a->end);
   assert((uintptr_t)current <= UINTPTR_MAX - size);
   if (current + size >= a->end) {
+    assert(0);
     return NULL;
   }
   a->current += size;
@@ -234,6 +235,8 @@ u8 roll_die() {
 Color playout(Board* b, Color c) {
   u8 moves[2 * 24];
   while (1) {
+    LOG("turn\n");
+    LOG("color: %d\n", c);
     u8 die0 = roll_die();
     u8 die1 = roll_die();
     if (die0 < die1) {
@@ -438,7 +441,7 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       best_index = i;
     }
   }
-  LOG("move_index: %d\n, depth: %d\n", best_index, DEPTH);
+  //LOG("move_index: %d\n, depth: %d\n", best_index, DEPTH);
   Node* child = node->children + best_index;
   assert(child->from != child->to);
   apply_move(&(state.board), node->color, child->from, child->to);
@@ -504,19 +507,6 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
     child_index = random_number() % unplayed;
   } else {
     child_index = random_number() % node->num_children;
-    //child_index = 0;
-    //double delta_max = 0;
-    //for (int i = 0; i < 6; i++) {
-    //  Node* child = node->children + i;
-    //  LOG("Delta: %f\n", child->delta);
-    //  LOG("Child Playouts: %d\n", child->playouts);
-    //  if ((child->delta > delta_max) ||
-    //      ((child->delta == delta_max) && (random_number() & 1))) {
-    //    delta_max = child->delta;
-    //    LOG("delta_max: %f\n", delta_max);
-    //    child_index = i;
-    //  }
-    //}
   }
   Node* child = node->children + child_index;
   u8 die = child->die;
@@ -667,6 +657,8 @@ int main(void) {
       root.color = c;
       Pool_Allocator allocator = pool_allocator(50000000);
       mcts_search(&allocator, state, &root, 200);
+      log_node(&root);
+      return 0;
       Node node = root;
       while (node.type == MOVE && node.color == c) {
         if (node.playouts == 0) {
