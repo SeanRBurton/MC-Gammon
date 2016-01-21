@@ -77,7 +77,6 @@ void* allocate_from_pool(Pool_Allocator* a, size_t size) {
   assert(current < a->end);
   assert((uintptr_t)current <= UINTPTR_MAX - size);
   if (current + size >= a->end) {
-    assert(0);
     return NULL;
   }
   a->current += size;
@@ -240,11 +239,8 @@ u8 roll_die() {
   return (u8)(random_number() % 6 + 1);
 }
 
-int PLAYOUTS;
-
 Color playout(Board* b, Color c) {
   //LOG2("----------------------------------");
-  PLAYOUTS += 1;
   u8 moves[2 * 24];
   while (1) {
     for(int i = 0; i < 28; i++) {
@@ -369,8 +365,6 @@ void update(Node* node, Color c) {
   //LOG("new_score: %f\n", node->score);
 }
 
-int DEPTH;
-
 typedef enum {
   RED_S = 0,
   WHITE_S = 1,
@@ -380,7 +374,6 @@ typedef enum {
 Selection select_random(Pool_Allocator*, Node*, GameState);
 
 Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
-  DEPTH += 1;
   assert(node->type == MOVE);
   if (node->playouts == 0) {
     u8 moves[2 * 24];
@@ -456,7 +449,6 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       best_index = i;
     }
   }
-  //LOG("move_index: %d\n, depth: %d\n", best_index, DEPTH);
   Node* child = node->children + best_index;
   assert(child->from != child->to);
   apply_move(&(state.board), node->color, child->from, child->to);
@@ -483,7 +475,6 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
 }
 
 Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) {
-  DEPTH += 1;
   assert(node->type == RANDOM);
   if (node->playouts == 0) {
     node->children = allocate_from_pool(allocator, 6 * sizeof(Node));
@@ -549,19 +540,14 @@ void mcts_search(Pool_Allocator* allocator, GameState state, Node* root, u32 tim
   int playout_block = 8;
   u64 t1 = t0;
   int j = 0;
-  int max_depth = 0;
   do {
     j += 1;
     for(int i = 0; i < playout_block; i++) {
-      DEPTH = 0;
       if (root->type != MOVE) {
         return;
       }
       if (select_move(allocator, root, state) == OUT_OF_MEMORY_S) {
         return;
-      }
-      if (DEPTH > max_depth) {
-        max_depth = DEPTH;
       }
     }
     u64 t2 = get_time_in_usecs();
@@ -598,7 +584,6 @@ void send_move(Color c, u8 from, u8 to) {
 }
 
 int main(void) {
-  PLAYOUTS = 0;
   seed_prng();
   #ifndef NDEBUG
   char log_file_name[1024];
@@ -608,7 +593,7 @@ int main(void) {
   #endif
   setvbuf(stdout, NULL, _IOLBF, 1024);
   setvbuf(stdin, NULL, _IOLBF, 1024);
-  Board b = {0};
+  Board b = {{0}};
   u8 indices[4] = {0, 11, 16, 18};
   u8 heights[4] = {2, 5, 3, 5};
   for(int i = 0; i < 4; i++) {
@@ -656,13 +641,14 @@ int main(void) {
       Node root = {0};
       root.type = MOVE;
       root.color = c;
-      Pool_Allocator allocator = pool_allocator(50000000);
+      Pool_Allocator allocator = pool_allocator(50 * 1000 * 1000);
+      Pool_Allocator spare_allocator = pool_allocator(15 * 4 * sizeof(Node));
       mcts_search(&allocator, state, &root, 200);
       //log_node(&root);
       Node node = root;
       while (node.type == MOVE && node.color == c) {
         if (node.playouts == 0) {
-          select_move(&allocator, &node, state);
+          select_move(&spare_allocator, &node, state);
         }
         if (!(node.type == MOVE && node.color == c)) {
           break;
@@ -695,6 +681,7 @@ int main(void) {
       printf("e\n");
       b = state.board;
       delete_pool(allocator);
+      delete_pool(spare_allocator);
     } else {
       while (1) {
         getline(&s0, &size, stdin);
@@ -709,18 +696,18 @@ int main(void) {
         u8 t;
         if (f0 == 255) {
           if (c == WHITE) {
-            f = 24;
+            f = WHITE_BAR;
           } else {
-            f = 25;
+            f = RED_BAR;
           }
         } else {
           f = get_index(c, f0);
         }
         if (t0 == 24) {
           if (c == WHITE) {
-            t = 26;
+            t = WHITE_HOME;
           } else {
-            t = 27;
+            t = RED_HOME;
           }
         } else {
           t = get_index(c, t0);
