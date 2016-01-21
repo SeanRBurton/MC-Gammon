@@ -14,6 +14,8 @@
 #define u32 uint32_t
 #define u64 uint64_t
 
+#define NDEBUG
+
 #ifdef NDEBUG
 #define LOG(...)
 #else
@@ -239,25 +241,34 @@ u8 roll_die() {
   return (u8)(random_number() % 6 + 1);
 }
 
-Color playout(Board* b, Color c) {
-  //LOG2("----------------------------------");
+Color playout(Board* b, Color c, u8 die0, u8 die1, u8 num_dice) {
   u8 moves[2 * 24];
-  while (1) {
-    for(int i = 0; i < 28; i++) {
-      //LOG2("%*d", 3, b->board[i]);
+  if (num_dice <= 1) {
+    assert(num_dice == 1);
+    u8 num_moves = generate_moves(moves, b, c, die0);
+    if (num_moves == 255) {
+      assert(abs(*home(b, c)) == 15);
+      return c;
     }
-    //LOG2("\n");
-    u8 die0 = roll_die();
-    u8 die1 = roll_die();
+    if (num_moves != 0) {
+      int j = random_number() % num_moves;
+      apply_move(b, c, moves[2 * j], moves[2 * j + 1]);
+    }
+    c = invert(c);
+    die0 = roll_die();
+    die1 = roll_die();
     if (die0 < die1) {
       u8 tmp = die0;
       die0 = die1;
       die1 = tmp;
     }
+  }
+  while (1) {
     if (die0 == die1) {
-      for(int i = 0; i < 4; i++) {
+      for(int i = 0; i < num_dice; i++) {
         u8 num_moves = generate_moves(moves, b, c, die0);
         if (num_moves == 255) {
+          assert(abs(*home(b, c)) == 15);
           return c;
         }
         if (num_moves == 0) {
@@ -271,6 +282,7 @@ Color playout(Board* b, Color c) {
       for(int i = 0; i < 3; i++) {
         u8 num_moves = generate_moves(moves, b, c, die0);
         if (num_moves == 255) {
+          assert(abs(*home(b, c)) == 15);
           //LOG2("%d\n", c);
           return c;
         } else if (num_moves == 0) {
@@ -288,6 +300,15 @@ Color playout(Board* b, Color c) {
       }
     }
     c = invert(c);
+    die0 = roll_die();
+    die1 = roll_die();
+    if (die0 < die1) {
+      u8 tmp = die0;
+      die0 = die1;
+      die1 = tmp;
+    } else if (die0 == die1) {
+      num_dice = 4;
+    }
   }
 }
 
@@ -374,6 +395,8 @@ typedef enum {
 Selection select_random(Pool_Allocator*, Node*, GameState);
 
 Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
+  LOG("move\n");
+  LOG("color: %d\n", node->color);
   assert(node->type == MOVE);
   if (node->playouts == 0) {
     u8 moves[2 * 24];
@@ -387,12 +410,13 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
     }
     for (int i = 0; i < unique_dice; i++) {
       u8 die = state.dice[i];
+      node->die = die;
       u8 num_moves = generate_moves(moves, &(state.board), node->color, die);
       if (num_moves == 255) {
+        assert(abs(*home(&(state.board), node->color)) == 15);
         update(node, node->color);
         return (Selection)node->color;
       } else if (num_moves != 0) {
-        node->die = die;
         node->children = allocate_from_pool(allocator, num_moves * sizeof(Node));
         if (node->children == NULL) {
           return OUT_OF_MEMORY_S;
@@ -400,31 +424,34 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
         node->num_children = num_moves;
         memset(node->children, 0, num_moves * sizeof(Node));
         if (state.num_dice == 1) {
-          for (int i = 0; i < num_moves; i++) {
-            Node* child = node->children + i;
+          for (int j = 0; j < num_moves; j++) {
+            Node* child = node->children + j;
             child->type = RANDOM;
-            child->color = invert(node->color);
-            child->from = moves[2 * i];
-            child->to = moves[2 * i + 1];
+            child->color = node->color;
+            child->from = moves[2 * j];
+            child->to = moves[2 * j + 1];
           }
         } else {
-          for (int i = 0; i < num_moves; i++) {
-            Node* child = node->children + i;
+          for (int j = 0; j < num_moves; j++) {
+            Node* child = node->children + j;
             child->type = MOVE;
-            child->from = moves[2 * i];
-            child->to = moves[2 * i + 1];
+            child->from = moves[2 * j];
+            child->to = moves[2 * j + 1];
             child->color = node->color;
           }
         }
         node->die = die;
-        Color c = playout(&state.board, node->color);
+        Color c = playout(&state.board, node->color,
+                                        state.dice[0],
+                                        state.dice[1],
+                                        state.num_dice);
         update(node, c);
         return (Selection)c;
       }
     }
     node->type = RANDOM;
     state.num_dice = 0;
-    node->color = invert(node->color);
+    node->index = -1;
     return select_random(allocator, node, state);
   }
   if (node->children == 0) {
@@ -442,7 +469,7 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       best_index = i;
       break;
     }
-    double ucb = si + sqrt(1 * log(n) / ni);
+    double ucb = si + sqrt(2 * log(n) / ni);
     if (ucb > best_ucb) {
       best_ucb = ucb;
       best_index = i;
@@ -451,17 +478,18 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
   Node* child = node->children + best_index;
   assert(child->from != child->to);
   apply_move(&(state.board), node->color, child->from, child->to);
-  if (state.dice[0] == node->die) {
-    if (state.num_dice == 2) {
-      state.dice[0] = state.dice[1];
-    }
-  } else {
-    assert(state.num_dice == 2);
-    assert(state.dice[0] == node->die);
-  }
-  state.num_dice -= 1;
   Selection s;
   if (child->type == MOVE) {
+    if (state.num_dice == 2) {
+      if (state.dice[0] == node->die) {
+        state.dice[0] = state.dice[1];
+      } else {
+        assert(state.dice[1] == node->die);
+      }
+    } else {
+      assert(state.dice[0] == node->die);
+    }
+    state.num_dice -= 1;
     s = select_move(allocator, child, state);
   } else {
     state.num_dice = 0;
@@ -474,6 +502,7 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
 }
 
 Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) {
+  LOG("chance\n");
   assert(node->type == RANDOM);
   if (node->playouts == 0) {
     node->children = allocate_from_pool(allocator, 6 * sizeof(Node));
@@ -487,20 +516,25 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
       Node* child = node->children + i;
       child->playouts = 0;
       child->die = i + 1;
-      child->color = node->color;
       if (state.num_dice == 0) {
         child->type = RANDOM;
+        child->color = node->color;
       } else {
         child->type = MOVE;
+        child->color = invert(node->color);
       }
     }
-    Color c = playout(&(state.board), node->color);
+    while (state.num_dice < 2) {
+      state.dice[(state.num_dice)++] = roll_die();
+    }
+    Color c = playout(&(state.board), node->color, state.dice[0], state.dice[1], state.num_dice);
     update(node, c);
     return (Selection)c;
   }
   u8 child_index = random_number() % 6;
   Node* child = node->children + child_index;
   u8 die = child_index + 1;
+  LOG("state: %u, node: %d, index: %d, color: %d\n", state.num_dice, node->num_dice, node->index, node->color);
   assert(state.num_dice == node->num_dice);
   assert(state.num_dice < 2);
   state.dice[state.num_dice++] = die;
@@ -540,6 +574,7 @@ void mcts_search(Pool_Allocator* allocator, GameState state, Node* root, u32 tim
   do {
     j += 1;
     for(int i = 0; i < playout_block; i++) {
+      LOG("-----------------------\n");
       if (root->type != MOVE) {
         return;
       }
@@ -642,7 +677,7 @@ int main(void) {
       root.color = c;
       Pool_Allocator allocator = pool_allocator(50 * 1000 * 1000);
       Pool_Allocator spare_allocator = pool_allocator(15 * 4 * sizeof(Node));
-      mcts_search(&allocator, state, &root, 200);
+      mcts_search(&allocator, state, &root, 50);
       //log_node(&root);
       Node node = root;
       while (node.type == MOVE && node.color == c) {
@@ -664,14 +699,16 @@ int main(void) {
         if (best_index == -1) {
           break;
         }
-        node = node.children[best_index];
-        state.num_dice -= 1;
+        LOG("num_dice: %d\n", state.num_dice);
+        LOG("die: %u\n", node.die);
+        LOG("dice: %u %u\n", state.dice[0], state.dice[1]);
         if (state.dice[0] == node.die) {
           state.dice[0] = state.dice[1];
         } else {
           assert(state.dice[1] == node.die);
         }
         state.num_dice -= 1;
+        node = node.children[best_index];
         send_move(c, node.from, node.to);
         apply_move(&(state.board), c, node.from, node.to);
       };
