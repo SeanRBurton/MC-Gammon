@@ -341,7 +341,7 @@ void log_node(Node* node) {
 
 typedef struct {
   Board board;
-  u8    dice[4];
+  u8    dice[2];
   u8    num_dice;
 } GameState;
 
@@ -386,7 +386,7 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
       unique_dice = 1;
     }
     for (int i = 0; i < unique_dice; i++) {
-      u8 die = state.dice[state.num_dice - 1 - i];
+      u8 die = state.dice[i];
       u8 num_moves = generate_moves(moves, &(state.board), node->color, die);
       if (num_moves == 255) {
         update(node, node->color);
@@ -428,7 +428,6 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
     return select_random(allocator, node, state);
   }
   if (node->children == 0) {
-    assert(true); //TODO: check winner.
     update(node, node->color);
     return (Selection)(node->color);
   }
@@ -452,15 +451,15 @@ Selection select_move(Pool_Allocator* allocator, Node* node, GameState state) {
   Node* child = node->children + best_index;
   assert(child->from != child->to);
   apply_move(&(state.board), node->color, child->from, child->to);
-  state.num_dice -= 1;
-  for(int i = 0; i < state.num_dice; i++) {
-    if (state.dice[i] == node->die) {
-      for(; i < state.num_dice; i++) {
-        state.dice[i] = state.dice[i + 1];
-      }
-      break;
+  if (state.dice[0] == node->die) {
+    if (state.num_dice == 2) {
+      state.dice[0] = state.dice[1];
     }
+  } else {
+    assert(state.num_dice == 2);
+    assert(state.dice[0] == node->die);
   }
+  state.num_dice -= 1;
   Selection s;
   if (child->type == MOVE) {
     s = select_move(allocator, child, state);
@@ -507,8 +506,6 @@ Selection select_random(Pool_Allocator* allocator, Node* node, GameState state) 
   state.dice[state.num_dice++] = die;
   if (state.num_dice == 2) {
     if (state.dice[0] == die) {
-      state.dice[2] = state.dice[0];
-      state.dice[3] = state.dice[0];
       state.num_dice = 4;
     } else {
       assert(state.num_dice <= 2);
@@ -628,15 +625,17 @@ int main(void) {
     if (c == our_color) {
       GameState state;
       state.board = b;
+      state.dice[0] = die0;
+      state.dice[1] = die1;
       if (die0 == die1) {
         state.num_dice = 4;
-        for (int i = 0; i < 4; i++) {
-          state.dice[i] = die0;
-        }
       } else {
         state.num_dice = 2;
-        state.dice[0] = die0;
-        state.dice[1] = die1;
+        if (state.dice[0] < state.dice[1]) {
+          u8 tmp = state.dice[0];
+          state.dice[0] = state.dice[1];
+          state.dice[1] = tmp;
+        }
       }
       Node root = {0};
       root.type = MOVE;
@@ -667,14 +666,12 @@ int main(void) {
         }
         node = node.children[best_index];
         state.num_dice -= 1;
-        for(int i = 0; i < state.num_dice; i++) {
-          if (state.dice[i] == node.die) {
-            for(; i < state.num_dice; i++) {
-              state.dice[i] = state.dice[i + 1];
-            }
-            break;
-          }
+        if (state.dice[0] == node.die) {
+          state.dice[0] = state.dice[1];
+        } else {
+          assert(state.dice[1] == node.die);
         }
+        state.num_dice -= 1;
         send_move(c, node.from, node.to);
         apply_move(&(state.board), c, node.from, node.to);
       };
